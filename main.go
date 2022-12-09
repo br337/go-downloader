@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -27,53 +26,6 @@ type configParams struct {
 	Goroutines int    `json:"goroutines"`
 	Downloads  string `json:"downloads-directory"`
 	URL        string `json:"url"`
-}
-
-type pod struct {
-	index int
-	URL   string
-}
-
-// func download(URL string) (io.ReadCloser, error) {
-// 	res, err := http.Get(URL)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer res.Body.Close()
-
-// 	if res.StatusCode != http.StatusOK {
-// 		return nil, errors.New(res.Status)
-// 	}
-
-// 	return res.Body, nil
-// }
-
-func save(path string, URL string) (int, error) {
-	res, err := http.Get(URL)
-	if err != nil {
-		return 0, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return 0, errors.New(res.Status)
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	if _, err = io.Copy(f, res.Body); err != nil {
-		return 0, err
-	}
-
-	sdata, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	return len(sdata), nil
 }
 
 func init() {
@@ -132,7 +84,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	re := regexp.MustCompile(`(?m)http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+`)
+	re := regexp.MustCompile(urlregex)
 	links := re.FindAllString(string(body), -1)
 
 	fmt.Println("Found ", len(links), " links on the front page.")
@@ -149,7 +101,7 @@ func main() {
 			log.Fatal("2", err)
 		}
 
-		rMP3 := regexp.MustCompile(`http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+.mp3`)
+		rMP3 := regexp.MustCompile(mp3regex)
 		songs := rMP3.FindAllString(string(body), -1)
 		if songs == nil {
 			continue

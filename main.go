@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gosuri/uilive"
 	"io"
 	"io/ioutil"
 	"log"
@@ -12,18 +11,15 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
-	"time"
 )
 
 const (
 	configPath = "config.json"
-	urlregex   = "https?:\\/\\/(www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\\+.~#?&//=]*)"
-	mp3regex   = "https?:\\/\\/(www\\.)?[-a-zA-Z0-9@:%._\\+~#=]{1,256}\\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\\+.~#?&//=]*).mp3"
+	urlregex   = `http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+`
+	mp3regex   = `http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+.mp3`
 )
 
 var (
-	wg     sync.WaitGroup
 	params configParams
 )
 
@@ -38,31 +34,46 @@ type pod struct {
 	URL   string
 }
 
-func download(URL string) (io.ReadCloser, error) {
+// func download(URL string) (io.ReadCloser, error) {
+// 	res, err := http.Get(URL)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer res.Body.Close()
+
+// 	if res.StatusCode != http.StatusOK {
+// 		return nil, errors.New(res.Status)
+// 	}
+
+// 	return res.Body, nil
+// }
+
+func save(path string, URL string) (int, error) {
 	res, err := http.Get(URL)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, errors.New(res.Status)
+		return 0, errors.New(res.Status)
 	}
 
-	return res.Body, nil
-}
-
-func save(path string, file io.ReadCloser) error {
 	f, err := os.Create(path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close()
-	if _, err = io.Copy(f, file); err != nil {
-		return err
+	if _, err = io.Copy(f, res.Body); err != nil {
+		return 0, err
 	}
 
-	return nil
+	sdata, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(sdata), nil
 }
 
 func init() {
@@ -110,11 +121,6 @@ func init() {
 }
 
 func main() {
-	writer := uilive.New()
-	writer.Start()
-
-	defer writer.Stop()
-
 	res, err := http.Get(params.URL)
 	if err != nil {
 		log.Fatal(err)
@@ -126,79 +132,49 @@ func main() {
 		log.Fatal(err)
 	}
 
-	rURL := regexp.MustCompile(urlregex)
-	links := rURL.FindAllString(string(body), -1)
-	if links != nil {
-		return
-	}
+	re := regexp.MustCompile(`(?m)http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+`)
+	links := re.FindAllString(string(body), -1)
 
-	sem := make(chan pod)
-	wg.Add(params.Goroutines)
+	fmt.Println("Found ", len(links), " links on the front page.")
 
-	defer close(sem)
-	defer wg.Wait()
-
-	fmt.Print("\n # \t STATUS \t SIZE \t NAME")
-	for i := 0; i < params.Goroutines; i++ {
-		go func() {
-			for {
-				pod, ok := <-sem
-				if !ok {
-					wg.Done()
-					return
-				}
-
-				res, err = http.Get(pod.URL)
-				if err != nil {
-					log.Fatal(err)
-				}
-				defer res.Body.Close()
-
-				body, err := ioutil.ReadAll(res.Body)
-				if err != err {
-					log.Fatal(err)
-				}
-
-				rMP3 := regexp.MustCompile(mp3regex)
-				songs := rMP3.FindAllString(string(body), -1)
-				if songs != nil {
-					log.Fatal()
-				}
-
-				song := songs[len(songs)-1]
-				songNameComponents := strings.Split(song, "/")
-
-				status, fin := "", false
-				go func() {
-					for i := 1; i <= 3; i++ {
-						if !fin {
-							status = fmt.Sprintf("downloading%s", strings.Repeat(".", i))
-						}
-
-						fmt.Fprintf(writer, "%d/%s \t %s \t %d \t %s \n", pod.index, "n", status, 0, songNameComponents[len(songNameComponents)-1])
-
-						time.Sleep(500 * time.Millisecond)
-					}
-				}()
-
-				data, err := download(song)
-				if err != nil {
-					status, fin = "FAILED", true
-					log.Print(err)
-				}
-
-				if err := save(songNameComponents[len(songNameComponents)-1], data); err != nil {
-					status, fin = "FAILED", true
-					log.Print(err)
-				}
-
-				status, fin = "SUCCESS", true
-			}
-		}()
-	}
-
+	fmt.Print("\n # \t STATUS \t SIZE \t NAME \n")
 	for i, link := range links {
-		sem <- pod{i, link}
+		res, err = http.Get(link)
+		if err != nil {
+			log.Fatal("1", err)
+		}
+
+		body, err := ioutil.ReadAll(res.Body)
+		if err != err {
+			log.Fatal("2", err)
+		}
+
+		rMP3 := regexp.MustCompile(`http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+.mp3`)
+		songs := rMP3.FindAllString(string(body), -1)
+		if songs == nil {
+			continue
+		}
+
+		song := songs[len(songs)-1]
+		songNameComponents := strings.Split(song, "/")
+		out, err := os.Create(fmt.Sprint(params.Downloads, "/", songNameComponents[len(songNameComponents)-1]))
+
+		res, err = http.Get(song)
+		if err != nil {
+			fmt.Printf("%d/%d \t %s \t %d \t %s \n", i, len(links), "FAILED", 0, songNameComponents[len(songNameComponents)-1])
+			continue
+		}
+
+		n, err := io.Copy(out, res.Body)
+		if err != nil {
+			fmt.Printf("%d/%d \t %s \t %d \t %s \n", i, len(links), "FAILED", 0, songNameComponents[len(songNameComponents)-1])
+			continue
+		}
+
+		fmt.Printf("%d/%d \t %s \t %d \t %s \n", i, len(links), "SUCCESS", n, songNameComponents[len(songNameComponents)-1])
+
+		out.Close()
+		res.Body.Close()
 	}
 
 }

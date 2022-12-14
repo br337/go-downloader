@@ -10,6 +10,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/gosuri/uilive"
 )
 
 const (
@@ -19,13 +22,95 @@ const (
 )
 
 var (
-	params configParams
+	params  ConfigParams
+	mp3s    map[string]bool = make(map[string]bool)
+	visited map[string]bool = make(map[string]bool)
 )
 
-type configParams struct {
+type ConfigParams struct {
 	Goroutines int    `json:"goroutines"`
 	Downloads  string `json:"downloads-directory"`
 	URL        string `json:"url"`
+}
+
+func CollectLinks(link string, depth int) {
+	if depth == 0 {
+		return
+	}
+
+	writer := uilive.New()
+	writer.Start()
+
+	visited[link] = true
+
+	fmt.Fprintf(writer, "[%s]  %d \t %s \n", "LOADING", depth, link)
+
+	res, err := http.Get(link)
+	if err != nil {
+		fmt.Fprintf(writer, "[%s]  %d \t %s \n", "FAILED", depth, link)
+	}
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != err {
+		fmt.Fprintf(writer, "[%s]  %d \t %s \n", "FAILED", depth, link)
+	}
+
+	data := string(body)
+
+	re := regexp.MustCompile(urlregex)
+	rMP3 := regexp.MustCompile(mp3regex)
+	links := re.FindAllString(data, -1)
+	songs := rMP3.FindAllString(data, -1)
+
+	res.Body.Close()
+
+	fmt.Fprintf(writer, "[%s]  %d \t %s \n", "SUCCESS", depth, link)
+	writer.Flush()
+	writer.Stop()
+
+	for _, song := range songs {
+		mp3s[song] = true
+	}
+
+	for _, v := range links {
+		if visited[v] {
+			continue
+		}
+
+		visited[v] = true
+		CollectLinks(v, depth-1)
+	}
+}
+
+func download(URL string) {
+	writer := uilive.New()
+	writer.Start()
+	writer.Flush()
+
+	songNameComponents := strings.Split(URL, "/")
+	out, err := os.Create(fmt.Sprint(params.Downloads, "/", songNameComponents[len(songNameComponents)-1]))
+
+	fmt.Fprintf(writer, "[%s]  ?? \t %s \n", "LOADING", songNameComponents[len(songNameComponents)-1])
+	writer.Flush()
+
+	res, err := http.Get(URL)
+	if err != nil {
+		fmt.Fprintf(writer, "[%s]  %d \t %s \n", "FAILED", 0, songNameComponents[len(songNameComponents)-1])
+		writer.Flush()
+	}
+
+	n, err := io.Copy(out, res.Body)
+	if err != nil {
+		fmt.Fprintf(writer, "[%s]  %d \t %s \n", "FAILED", 0, songNameComponents[len(songNameComponents)-1])
+		writer.Flush()
+	}
+	fmt.Fprintf(writer, "[%s]  %.2fmb \t %s \n", "SUCCESS", float64(n)/(1<<20), songNameComponents[len(songNameComponents)-1])
+	writer.Flush()
+
+	out.Close()
+	res.Body.Close()
+	writer.Flush()
+	writer.Stop()
 }
 
 func init() {
@@ -35,7 +120,7 @@ func init() {
 	if err != nil {
 		fmt.Println(configPath, " doesn't exist. Creating file...")
 
-		data := configParams{
+		data := ConfigParams{
 			URL:        "http://blog.livedoor.jp/daibakarenji/infoinfo.html",
 			Downloads:  "Downloads",
 			Goroutines: 5,
@@ -73,60 +158,25 @@ func init() {
 }
 
 func main() {
-	res, err := http.Get(params.URL)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer res.Body.Close()
 
-	body, err := ioutil.ReadAll(res.Body)
-	if err != err {
-		log.Fatal(err)
-	}
+	guard := make(chan struct{}, params.Goroutines)
+	signal := make(chan struct{})
 
-	re := regexp.MustCompile(urlregex)
-	links := re.FindAllString(string(body), -1)
+	fmt.Printf("\n   STATUS  D     NAME \n")
+	CollectLinks(params.URL, 2)
 
-	fmt.Println("Found ", len(links), " links on the front page.")
+	fmt.Printf("\nFound %d mp3 files \n", len(mp3s))
 
-	fmt.Print("\n # \t STATUS \t SIZE \t NAME \n")
-	for i, link := range links {
-		res, err = http.Get(link)
-		if err != nil {
-			log.Fatal("1", err)
-		}
+	fmt.Printf("\n   STATUS  SIZE \t NAME \n")
+	for k := range mp3s {
+		guard <- struct{}{}
+		go func(k string) {
+			download(k)
+			<-guard
+		}(k)
 
-		body, err := ioutil.ReadAll(res.Body)
-		if err != err {
-			log.Fatal("2", err)
-		}
-
-		rMP3 := regexp.MustCompile(mp3regex)
-		songs := rMP3.FindAllString(string(body), -1)
-		if songs == nil {
-			continue
-		}
-
-		song := songs[len(songs)-1]
-		songNameComponents := strings.Split(song, "/")
-		out, err := os.Create(fmt.Sprint(params.Downloads, "/", songNameComponents[len(songNameComponents)-1]))
-
-		res, err = http.Get(song)
-		if err != nil {
-			fmt.Printf("%d/%d \t %s \t %d \t %s \n", i, len(links), "FAILED", 0, songNameComponents[len(songNameComponents)-1])
-			continue
-		}
-
-		n, err := io.Copy(out, res.Body)
-		if err != nil {
-			fmt.Printf("%d/%d \t %s \t %d \t %s \n", i, len(links), "FAILED", 0, songNameComponents[len(songNameComponents)-1])
-			continue
-		}
-
-		fmt.Printf("%d/%d \t %s \t %d \t %s \n", i, len(links), "SUCCESS", n, songNameComponents[len(songNameComponents)-1])
-
-		out.Close()
-		res.Body.Close()
+		time.Sleep(time.Second * 2)
 	}
 
+	<-signal
 }
